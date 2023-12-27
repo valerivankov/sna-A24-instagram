@@ -24,7 +24,7 @@ library(ergm)
 library(intergraph)
 ```
 
-```{r, warning = FALSE, eval = FALSE}
+```{r, warning = FALSE}
 json <- fromJSON("https://www.instagram.com/explore/tags/a24/?__a=1&__d=dis")
 edge_hashtag_to_media <- json$graphql$hashtag$edge_hashtag_to_media
 end_cursor <- edge_hashtag_to_media$page_info$end_cursor
@@ -93,11 +93,6 @@ extractInfo(index)
 
 table <- do.call(rbind.data.frame, Map('c', post_id, post_url, post_img_url, post_likes, post_owner, post_text, post_time))
 colnames(table) <- c("ID", "Post_URL", "Img_URL", "Likes", "Owner", "Text", "Date")
-table <- table[table$Date >= "2013-02-01", ]
-```
-
-```{r, echo = FALSE}
-table <- read.csv("~/R/table-a24-2023-08-25.csv")
 table <- table[table$Date >= "2013-02-01", ]
 ```
 
