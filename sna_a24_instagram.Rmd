@@ -1,0 +1,322 @@
+---
+title: "#a24 on Instagram: Examining A24's Instagram Presence Using Social Network Analysis"
+author: "Valeri Vankov"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+A few months ago Vox released a video, titled ["How A24 took over Hollywood"](https://youtu.be/7tuRJIkDcXg?si=iUYAx4xasQFtQ1hV), according to which one of the main reasons A24 became a household name is because it chose to "forgo traditional marketing and use cheaper, viral forms of marketing" by leveraging the power of social media. This video, among other articles about A24's success, prompted me to consider A24's presence on Instagram by exploring #a24's social network and its related hashtags. 
+
+To extract information about #a24, I used the hashtag's official Instagram [page](https://www.instagram.com/explore/tags/a24/).Using parts of Jonas Schroeder's InstaCrawlR project which is available on [GitHub](https://github.com/JonasSchroeder/InstaCrawlR), I was able to scrape all posts dating back to February 2013 (the month in which A24 created its Instagram profile and released its first film in the US, *A Glimpse Inside the Mind of Charles Swan III*). The code is shown below:
+
+```{r, message = FALSE, warning = FALSE}
+library(jsonlite)
+library(stringr)
+library(jpeg)
+library(tidyr)
+library(utf8)
+library(httr)
+library(igraph)
+library(ergm)
+library(intergraph)
+```
+
+```{r, warning = FALSE, eval = FALSE}
+json <- fromJSON("https://www.instagram.com/explore/tags/a24/?__a=1&__d=dis")
+edge_hashtag_to_media <- json$graphql$hashtag$edge_hashtag_to_media
+end_cursor <- edge_hashtag_to_media$page_info$end_cursor
+posts <- edge_hashtag_to_media$edges$node
+
+index <- 1
+post_id <- list()
+post_url <- list()
+post_text <- list()
+post_time <- list()
+post_likes <- list()
+post_owner <- list()
+post_img_url <- list()
+
+extractInfo <- function(index){
+    print("extractInfo function called")
+    maxrows <- nrow(posts)
+    for(i in 1:maxrows){
+        if(i == maxrows){
+            assign("index", index, envir = .GlobalEnv)
+            assign("post_id", post_id, envir = .GlobalEnv)
+            assign("post_text", post_text, envir = .GlobalEnv)
+            assign("post_time", post_time, envir = .GlobalEnv)
+            assign("post_img_url", post_img_url, envir = .GlobalEnv)
+            assign("post_url", post_url, envir = .GlobalEnv)
+            assign("post_likes", post_likes, envir = .GlobalEnv)
+            assign("post_owner", post_owner, envir = .GlobalEnv)
+            getNewPosts(index)
+        } else {
+            if(length(posts$edge_media_to_caption$edges[[i]][["node"]][["text"]])==0){
+                post_text[index] <- "no-text"
+                print("no text in post")
+            } else {
+                temp <- posts$edge_media_to_caption$edges[[i]][["node"]][["text"]]
+                post_text[index] <- gsub("\n", " ", temp)
+            }
+            
+            post_id_temp <- posts[i,5]
+            post_url[index] <-  str_glue("http://instagram.com/p/{post_id_temp}")
+            post_id[index] <- post_id_temp
+            post_time[index] <- toString(as.POSIXct(posts[i,7], origin="1970-01-01"))
+            post_img_url[index] <- posts[i,9]
+            post_likes[index] <- posts[i,11]
+            post_owner[index] <- posts[i,12]
+            
+            index <- index + 1
+        }
+    }    
+}
+
+getNewPosts <- function(index){
+    print("getNewPosts function called")
+    url_next <- str_glue("{url_start}&max_id={end_cursor}")
+    json <- fromJSON(url_next)
+    edge_hashtag_to_media <- json$graphql$hashtag$edge_hashtag_to_media
+    end_cursor <- edge_hashtag_to_media$page_info$end_cursor
+    posts <- edge_hashtag_to_media$edges$node
+    assign("end_cursor", end_cursor, envir = .GlobalEnv)
+    assign("posts", posts, envir = .GlobalEnv)
+    print(index)
+    Sys.sleep(1)
+    extractInfo(index)
+}
+
+extractInfo(index)
+
+table <- do.call(rbind.data.frame, Map('c', post_id, post_url, post_img_url, post_likes, post_owner, post_text, post_time))
+colnames(table) <- c("ID", "Post_URL", "Img_URL", "Likes", "Owner", "Text", "Date")
+table <- table[table$Date >= "2013-02-01", ]
+```
+
+```{r, echo = FALSE}
+table <- read.csv("~/R/table-a24-2023-08-25.csv")
+table <- table[table$Date >= "2013-02-01", ]
+```
+
+Now we are going to create a node list containing all of the hashtags related to #a24 as well as an edge list containing all pairs of hashtags that appear in the same post. This will allow us to create an ego-centric social network for #a24 which will be used for further analysis.
+
+```{r}
+nodes <- vector("list", length = nrow(table))
+
+for(i in 1:nrow(table)) {
+  nodes[[i]] <- unlist(strsplit(table$Text[i], " "))[grep("^#", unlist(strsplit(table$Text[i], " ")))]
+  nodes[[i]] <- nodes[[i]][grepl("^[\x20-\x7E]+$", nodes[[i]])]
+}
+
+edges <- vector("list", length = nrow(table))
+
+for(i in 1:nrow(table)) {
+  if(length(nodes[[i]]) > 1) {
+    edges[[i]] <- combn(nodes[[i]], 2)
+  }
+}
+
+node_list <- unique(unlist(nodes))
+
+edge_list <- do.call(cbind, Filter(Negate(is.null), edges))
+edge_list <- t(edge_list)
+
+a24_graph <- graph.data.frame(as.data.frame(edge_list), vertices = node_list, directed = FALSE)
+summary(a24_graph)
+```
+
+The resulting graph has over 200,000 nodes and 25,000,000 edges! Let's analyze its structure in more depth:
+
+## 1. Density
+
+The graph has a very low density (meaning that most of the nodes are not connected all):
+
+```{r}
+graph.density(a24_graph)
+```
+
+Moreover, the plot below shows that the degree distribution of the nodes is extremely uneven:
+
+```{r}
+plot(degree(a24_graph), type = "l", 
+     main = "Degree Distribution", 
+     xlab = "Number of Vertices", 
+     ylab = "Degree")
+```
+
+We can check that, in fact, over 90\% of the nodes are connected to less than 0.1\% of all the possible nodes in the graph (this not even considering the fact that many of those nodes have multiple edges connecting to the same node). Hence, we will create a subgraph based on the nodes whose degree is at least 0.01\% of the number of nodes in the graph. This is a good choice for several reasons:
+
+1. It reduces the computational complexity of the operations done below.
+2. It gets rid of nonsensical and irrelevant hashtags that create noise in the data.
+3. It still preserves the majority of connections between hashtags (over 75\%).
+
+Below are the calculations for these estimations:
+
+```{r}
+# % of nodes connected to <0.1% of all nodes 
+mean(degree(a24_graph)/gorder(a24_graph) < 0.001)*100
+
+# Creating the subgraph
+nodes_0.001 <- names(degree(a24_graph)[degree(a24_graph)/gorder(a24_graph) >= 0.001])
+a24_graph_0.001 <- induced_subgraph(a24_graph, nodes_0.001)
+
+# Calculating the % of edges preserved
+gsize(a24_graph_0.001)/gsize(a24_graph)
+```
+
+The density of this graph is also noticeably greater than that of the original graph:
+
+```{r}
+graph.density(a24_graph_0.001)
+```
+
+## 2. Transitivity
+
+```{r}
+paste("Transitivity of original graph:", round(transitivity(a24_graph), 2))
+paste("Transitivity of subgraph:", round(transitivity(a24_graph_0.001), 2))
+```
+
+As seen above, the subgraph's transitivity is about 100 times higher than the transitivity of the original graph (the ratio is similar to the density ratio of the two networks). In the new network, a transitivity of about 0.14 suggests that 14\% of the triads in the networks are closed. This result is not unusual, as the more popular hashtags are connected to many hashtags, including other popular hashtags; in fact, hashtags like #a24, #a24films, and #films are likely to be used simultaneously in multiple posts.
+
+## 3. Centrality
+
+Using the subgraph, we can calculate measures of centrality, including degree centrality, eigenvector centrality, closeness centrality, and betwenness centrality. For each measure, we will comment on its distribution and print the 100 hashtags with the highest scores.
+
+Degree centrality refers to the number of connections a node has.
+
+```{r}
+deg <- degree(a24_graph_0.001)
+summary(deg)
+```
+
+The distribution is extremely right-skewed. Although the average degree is about 10\% the total number of edges, only about a quarter of the nodes are connected to more than 5\% of the nodes. Therefore, the hashtags with the highest number of connections has a strong effect on the degree distribution. 
+
+Below are the 100 nodes with highest degree centrality:
+
+```{r}
+(deg_top_100 <- names(deg[order(deg, decreasing = TRUE)][1:100]))
+```
+
+Eigenvector centrality, which is suitable for undirected graphs, is useful for capturing not only the number of connections a node has but also the importance of those nodes.
+
+```{r}
+eig <- evcent(a24_graph_0.001)$vector
+summary(eig)
+```
+
+This distribution is also extremely right-skewed, showing that certain hashtags have much higher eigenvector centrality scores than the rest of the hashtags.
+
+Below are the 100 nodes with highest eigenvector centrality:
+
+```{r}
+(eig_top_100 <- names(eig[order(eig, decreasing = TRUE)][1:100]))
+```
+
+Closeness centrality is a measure of the proximity of each node to every other node in the network.
+
+```{r}
+clo <- closeness(a24_graph_0.001)
+summary(clo)
+```
+
+Unlike the distributions for degree and eigenvector centrality, this distribution seems more even.
+
+Below are the 100 nodes with highest closeness centrality:
+
+```{r}
+(clo_top_100 <- names(clo[order(clo, decreasing = TRUE)][1:100]))
+```
+
+Finally, betweenness centrality can inform us about the extent to which each node serves as an artery
+connecting other nodes. This is arguably the most relevant centrality measure in this case, as it allows us to infer about the flow of information through the network.
+
+```{r}
+bet <- betweenness(a24_graph_0.001)
+summary(bet)
+```
+
+Again, the betweenness centrality distribution is heavily right-skewed, with around 75\% of the nodes having a score of less than 50, compared to the mean which is more than 180 times higher.
+
+Below are the 100 nodes with highest closeness centrality:
+
+```{r}
+(bet_top_100 <- names(bet[order(bet, decreasing = TRUE)][1:100]))
+```
+
+It appears that the top 100 lists share a lot of similar hashtags. To explore this, we are going to output a list of all hashtags that appear in all four lists:
+
+```{r}
+Reduce(intersect, list(deg_top_100, eig_top_100, clo_top_100, bet_top_100))
+```
+
+Indeed, there are 62 hashtags that are the top of all centrality measures. These include general keywords relating to film or the film industry (e.g. #film, #cinema, #hbo, #hollywood) as well as names of A24 films or people involved with them (e.g. #hereditary, #midsommar, #miagoth, #michelleyeoh). Interestingly, some of the hashtags are also descriptors of what the Instagram post is about (e.g. #art, #moviereview, #oscars, #podcast). This means that Instagram users tend to make references not only to A24's content when talking about A24 but also to related films, studios, types of media, or events.
+
+As seen below, the correlations between all of the centrality measures are positive and relatively high. In particular, degree centrality is highly correlated with eigenvector centrality and betweenness centrality but less so with closeness centrality. Additionally closeness centrality is highly correlated with betweenness correlation and somewhat less so with eigenvector centrality. In other words, although the hashtag network is large, the nodes with the highest degrees tend to be connected to other high-degree nodes. These nodes are also important for establishing connections between less popular nodes.
+
+```{r}
+cents <- data.frame(deg, eig, clo, bet)
+cor(cents, method = "spearman")
+```
+
+# 4. Community Detection
+
+Finally, we are going to use a fast greedy algorithm to partition the network into groups with greater in-group modularity than between-group modularity (that is, there are more edges within the groups and less between them). To apply the algorithm, we need to "simplify" the network by converting multiple edges to single edges with higher weight.
+
+```{r}
+a24_graph_0.001_simplified <- simplify(a24_graph_0.001, edge.attr.comb = "sum")
+fg <- cluster_fast_greedy(a24_graph_0.001_simplified, weights = E(a24_graph_0.001_simplified)$weight)
+```
+
+Below is the table distribution of the clusters:
+
+```{r}
+table(membership(fg))
+```
+
+Notably clusters 1, 2, and 3 contain the majority of hashtags. To be exact, they contain over 96\% of the hashtags:
+
+```{r}
+(length(nodes_0.001[membership(fg) == 1]) + 
+ length(nodes_0.001[membership(fg) == 2]) + 
+ length(nodes_0.001[membership(fg) == 3])) / gorder(a24_graph_0.001)*100
+```
+
+Below are the 100 hashtags from each group that have the highest degree:
+
+```{r}
+print("Cluster 1 (Top 100):")
+cluster_1 <- nodes_0.001[membership(fg) == 1]
+degree_1 <- degree(a24_graph_0.001)[cluster_1]
+cluster_1[order(degree_1, decreasing = TRUE)][1:100]
+```
+
+Cluster 1 mentions a lot of specific films, directors, actors, genres, and experiences related to film. There are also pop culture and media platform references..
+
+```{r}
+print("Cluster 2 (Top 100):")
+cluster_2 <- nodes_0.001[membership(fg) == 2]
+degree_2 <- degree(a24_graph_0.001)[cluster_2]
+cluster_2[order(degree_2, decreasing = TRUE)][1:100]
+```
+
+Cluster 2 makes references to horror themes and films (especially A24 films). There is also a lot of interest in various types of art, including poster or fan art.
+
+```{r}
+print("Cluster 3 (Top 100):")
+cluster_3 <- nodes_0.001[membership(fg) == 3]
+degree_3 <- degree(a24_graph_0.001)[cluster_3]
+cluster_3[order(degree_3, decreasing = TRUE)][1:100]
+```
+
+Cluster 3 includes various topics films, people, locations, and cultures.
+
+# 5. Conclusion
+
+Overall, #a24 has a large hashtag network in which most of the connections are between a small number of hashtags. The centrality measures and community detection algorithm reveal that discussions of A24 are centered around all kinds of details about their movies (e.g., titles, actors, directors, events, etc.). At the same time, people are interested in connecting A24 to other forms of entertainment, including art, fashion, and music, as well as engaging with related products (e.g., horror films) and experiences (e.g., podcasts and fan meetings).
+
+
+
